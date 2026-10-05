@@ -1,0 +1,32 @@
+[application]
+name = "NotChat"
+
+[web.app]
+title = "NotChat"
+
+[bundle]
+# Java/Android package names cannot contain hyphens
+# Keep applicationId stable so upgrades replace the existing install
+identifier = "dev.zarkones.onion_chat"
+publisher = "ZARKONES"
+
+# Unified permissions → Android CAMERA + iOS NSCameraUsageDescription (dx 0.7+)
+[permissions]
+camera = { description = "Scan NotChat invite QR codes" }
+
+# Android-specific extras + custom manifest merge path
+[android]
+# Custom manifest with INTERNET + CAMERA (see ANDROID.md § Permissions)
+manifest = "android/AndroidManifest.xml"
+
+[android.permissions]
+"android.permission.INTERNET" = { description = "Network connectivity for messaging" }
+"android.permission.CAMERA" = { description = "Scan NotChat invite QR codes" }
+# Background + notifications (service/receiver elements are added post-dx by
+# android/patch_gradle_project.py — dx 0.7.10 cannot declare them).
+"android.permission.POST_NOTIFICATIONS" = { description = "Notify about new messages" }
+"android.permission.FOREGROUND_SERVICE" = { description = "Stay reachable in the background" }
+"android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" = { description = "Foreground service type for messaging" }
+"android.permission.RECEIVE_BOOT_COMPLETED" = { description = "Restart after reboot" }
+"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" = { description = "Ask for unrestricted battery use" }
+"android.permission.ACCESS_NETWORK_STATE" = { description = "Network state" }

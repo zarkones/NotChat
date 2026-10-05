@@ -1,0 +1,65 @@
+#!/bin/bash
+# Minimal pkg-config shim for this PoC box (no system pkg-config binary).
+set -euo pipefail
+export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig}"
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "1.8.1"
+  exit 0
+fi
+
+# Prefer real pkg-config if present later
+if command -v pkg-config.real >/dev/null 2>&1; then
+  exec pkg-config.real "$@"
+fi
+
+# Very small subset: openssl / libssl / libcrypto
+args=("$@")
+mod=""
+cflags=false
+libs=false
+exists=false
+for a in "${args[@]}"; do
+  case "$a" in
+    --cflags) cflags=true ;;
+    --libs) libs=true ;;
+    --exists) exists=true ;;
+    -*) ;;
+    *) mod="$a" ;;
+  esac
+done
+
+case "$mod" in
+  openssl|libssl|libcrypto)
+    if $exists; then exit 0; fi
+    out=""
+    if $cflags; then out+="-I/usr/include "; fi
+    if $libs; then
+      case "$mod" in
+        libcrypto) out+="-L/usr/lib/x86_64-linux-gnu -lcrypto " ;;
+        libssl) out+="-L/usr/lib/x86_64-linux-gnu -lssl -lcrypto " ;;
+        openssl) out+="-L/usr/lib/x86_64-linux-gnu -lssl -lcrypto " ;;
+      esac
+    fi
+    echo "${out% }"
+    exit 0
+    ;;
+esac
+
+# Fall back: parse .pc if present
+pc=""
+for d in ${PKG_CONFIG_PATH//:/ }; do
+  if [[ -f "$d/${mod}.pc" ]]; then pc="$d/${mod}.pc"; break; fi
+done
+if [[ -z "$pc" ]]; then
+  echo "Package $mod was not found in the pkg-config search path" >&2
+  exit 1
+fi
+if $exists; then exit 0; fi
+# naive: print Libs / Cflags lines
+if $cflags; then
+  grep -E '^Cflags:' "$pc" | sed 's/^Cflags: *//' || true
+fi
+if $libs; then
+  grep -E '^Libs:' "$pc" | sed 's/^Libs: *//' || true
+fi

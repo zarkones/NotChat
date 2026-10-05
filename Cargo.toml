@@ -1,0 +1,73 @@
+[package]
+name = "onion-chat"
+version = "0.1.0"
+edition = "2021"
+description = "NotChat (onion-chat): P2P text chat over Tor onion services (Dioxus + Arti)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = []
+desktop = ["dep:dioxus", "dioxus/desktop", "dep:arboard"]
+mobile = ["dep:dioxus", "dioxus/mobile"]
+
+[[bin]]
+name = "onion-chat"
+path = "src/main.rs"
+
+[[bin]]
+name = "headless"
+path = "src/bin/headless.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+futures = "0.3"
+safelog = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+arti-client = { version = "0.47", default-features = false, features = [
+    "tokio",
+    "native-tls",
+    "onion-service-service",
+    "onion-service-client",
+    "static-sqlite",
+] }
+tor-hsservice = "0.47"
+tor-cell = "0.47"
+tor-proto = "0.47"
+tor-rtcompat = { version = "0.47", features = ["tokio", "native-tls"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "std"] }
+crypto_box = { version = "0.9", features = ["std", "chacha20"] }
+curve25519-dalek = "4"
+sha2 = "0.10"
+blake3 = "1"
+rand = "0.8"
+rand_core = "0.6"
+uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
+url = "2"
+hex = "0.4"
+
+dioxus = { version = "0.7.10", optional = true }
+arboard = { version = "3", optional = true }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# Android-only JNI glue (foreground service, notifications). Same versions
+# tao/wry already pull in, so no new crates are downloaded.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = false
+codegen-units = 16

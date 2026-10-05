@@ -1,0 +1,55 @@
+# Rust / Dioxus build
+/target/
+**/*.rs.bk
+Cargo.toml.bak
+
+# Local Arti / app data (identity, messages)
+/data/
+!/data/.gitkeep
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Built APKs / AABs
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Android release signing (never commit)
+android/notchat-release.keystore
+android/*.keystore
+android/*.jks
+android/keystore.properties
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs / scratch
+*.log
+/tmp/
+.env
+.env.*
+
+# Local backups / sync archives
+*.tgz
+*.tar.gz
+*-backup-*.tgz
+notifications-background.diff
+
+# Local Android/cross-build tooling (pkg-config shim, host libs)
+.tools/
+*.so
+*.so.*
+*.dylib
+*.dll
+# keep source; never commit prebuilt native blobs from dx/gradle
+**/jniLibs/
