@@ -183,3 +183,63 @@ overlay patch, then `./gradlew :app:assembleRelease` in `target/dx/onion-chat/re
 upgraded to the release-signed APK (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, signature mismatch).
 `adb uninstall dev.zarkones.onion_chat` first — this **wipes app data** (identity / contacts / messages)
 unless exported beforehand.
+
+
+## 8. CI release builds (GitHub Actions)
+
+Workflow: [`.github/workflows/android-release.yml`](.github/workflows/android-release.yml).
+On **Release published** (and on a pushed `v*` tag, or manually via *Run workflow*) it builds the
+signed, R8-minified arm64 APK on `ubuntu-latest` with `android/build-release-apk.sh` and attaches
+it to the release as **`NotChat-arm64.apk`** (+ `NotChat-arm64.apk.sha256`). Stable download link:
+`https://github.com/zarkones/NotChat/releases/latest/download/NotChat-arm64.apk`.
+
+CI installs: JDK 17 (`actions/setup-java`, Temurin), Android SDK `platforms;android-34`,
+`build-tools;34.0.0`, NDK `27.0.12077973` (`android-actions/setup-android`), Rust from
+`rust-toolchain.toml` + `aarch64-linux-android`, `dx` **0.7.10** (prebuilt from the Dioxus GitHub
+release, sha256-checked — bump `DX_VERSION` in the workflow together with `dioxus` in `Cargo.toml`),
+Pillow for the icon generator. Cargo (`Swatinem/rust-cache`), Gradle and dx's OpenSSL prebuilts are cached.
+The build script takes `JAVA_HOME` / `ANDROID_HOME` / `NDK_HOME` (or `ANDROID_NDK_HOME`) from the
+environment; the local `$HOME/jdks/temurin-17` / `$HOME/Android/Sdk` paths are only fallbacks.
+
+### Required repository secrets
+
+| Secret | Value |
+|--------|-------|
+| `NOTCHAT_KEYSTORE_BASE64` | `base64 -w0 android/notchat-release.keystore` (one line) |
+| `NOTCHAT_KEYSTORE_PASSWORD` | store password |
+| `NOTCHAT_KEY_ALIAS` | key alias (e.g. `notchat`) |
+| `NOTCHAT_KEY_PASSWORD` | key password |
+
+```bash
+# with the GitHub CLI, from the repo root (values are read from stdin / the file, not echoed):
+base64 -w0 android/notchat-release.keystore | gh secret set NOTCHAT_KEYSTORE_BASE64
+gh secret set NOTCHAT_KEYSTORE_PASSWORD     # prompts
+gh secret set NOTCHAT_KEY_ALIAS --body notchat
+gh secret set NOTCHAT_KEY_PASSWORD          # prompts
+```
+
+Placeholder list: [`.github/android-release-secrets.example`](.github/android-release-secrets.example).
+The workflow decodes the keystore to `android/notchat-release.keystore` (gitignored) only for the
+build step, passes passwords as `NOTCHAT_*` env vars (no `keystore.properties` written) and deletes
+the keystore afterwards. **Use the same keystore as your local release builds**, otherwise CI APKs
+cannot upgrade a phone running a locally built release (signature mismatch).
+
+### Cutting a release
+
+1. Bump `version` in `Cargo.toml` if desired, commit, push `main`.
+2. Tag and publish:
+   ```bash
+   gh release create v0.1.0 --target main --title "NotChat v0.1.0" --generate-notes
+   # or GitHub UI → Releases → Draft a new release → new tag v0.1.0 → Publish
+   ```
+   Pushing the tag alone (`git tag v0.1.0 && git push origin v0.1.0`) also works: the workflow creates the release if it does not exist
+   (tags like `v0.2.0-rc1` become pre-releases). Release + tag events for the same tag are
+   serialised and the second run is skipped once the APK is attached.
+3. Wait for **Actions → Android release APK** (~30–60 min cold, faster with warm caches); the APK
+   appears under the release's assets and as a workflow artifact.
+4. Re-run for an existing release: *Actions → Android release APK → Run workflow*, `tag = v0.1.0`
+   (overwrites the asset).
+
+`versionName` is set from the tag (`v0.1.0` → `0.1.0`); `versionCode` stays dx's default `1`
+unless `NOTCHAT_VERSION_CODE` is exported (Android allows reinstalling the same versionCode, but
+never a lower one).

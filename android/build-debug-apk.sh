@@ -18,11 +18,33 @@ for a in "$@"; do
   esac
 done
 
-export JAVA_HOME="${JAVA_HOME:-$HOME/jdks/temurin-17}"
-export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
-export NDK_HOME="${NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)}"
-export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$NDK_HOME}"
+# Toolchain locations: env wins (CI: actions/setup-java + android-actions/setup-android
+# export JAVA_HOME / ANDROID_HOME); local fallbacks only if those dirs exist.
+if [ -z "${JAVA_HOME:-}" ]; then
+  if [ -d "$HOME/jdks/temurin-17" ]; then
+    JAVA_HOME="$HOME/jdks/temurin-17"
+  elif command -v java >/dev/null 2>&1; then
+    JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+  else
+    echo "ERROR: JAVA_HOME not set and no JDK 17 found" >&2
+    exit 1
+  fi
+fi
+export JAVA_HOME
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+if [ -z "${NDK_HOME:-}" ]; then
+  NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+  [ -z "$NDK_HOME" ] && NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+fi
+if [ -z "$NDK_HOME" ] || [ ! -d "$NDK_HOME" ]; then
+  echo "ERROR: Android NDK not found (set NDK_HOME / ANDROID_NDK_HOME or install ndk;<ver> in \$ANDROID_HOME)" >&2
+  exit 1
+fi
+export NDK_HOME
+export ANDROID_NDK_HOME="$NDK_HOME"
 export PATH="$HOME/.cargo/bin:$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+echo "==> JAVA_HOME=$JAVA_HOME ANDROID_HOME=$ANDROID_HOME NDK_HOME=$NDK_HOME"
 
 GRADLE_DIR=target/dx/onion-chat/$PROFILE/android/app
 DX_FLAGS=(--platform android --features mobile --target aarch64-linux-android)
@@ -61,11 +83,17 @@ if [ "$PROFILE" = release ]; then
   fi
   KS_FILE="$(realpath "$KS_FILE")"
   echo "==> gradle assembleRelease (signed with $KS_FILE alias $KEY_ALIAS)"
+  # Optional version override (CI sets NOTCHAT_VERSION_NAME from the release tag);
+  # dx otherwise uses Cargo.toml version / versionCode 1.
+  VERSION_ARGS=()
+  [ -n "${NOTCHAT_VERSION_NAME:-}" ] && VERSION_ARGS+=(-Pandroid.injected.version.name="$NOTCHAT_VERSION_NAME")
+  [ -n "${NOTCHAT_VERSION_CODE:-}" ] && VERSION_ARGS+=(-Pandroid.injected.version.code="$NOTCHAT_VERSION_CODE")
   (cd "$GRADLE_DIR" && ./gradlew --no-daemon -q :app:assembleRelease \
     -Pandroid.injected.signing.store.file="$KS_FILE" \
     -Pandroid.injected.signing.store.password="$KS_PASS" \
     -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-    -Pandroid.injected.signing.key.password="$KEY_PASS")
+    -Pandroid.injected.signing.key.password="$KEY_PASS" \
+    ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"})
   APK="$GRADLE_DIR/app/build/outputs/apk/release/app-release.apk"
   OUT=app-release-arm64.apk
 else

@@ -1,0 +1,233 @@
+# Build the NotChat release APK (arm64 / aarch64-linux-android) and attach it to
+# the GitHub Release.
+#
+# Triggers
+#   * release: published   -> build + attach NotChat-arm64.apk to that release
+#   * push tag v*          -> build + attach (creates the release if none exists yet;
+#                             a release created with GITHUB_TOKEN does not re-trigger
+#                             this workflow). If the asset is already attached (e.g. the
+#                             "release published" run won the race) the build is skipped.
+#   * workflow_dispatch    -> manual (re)build; optional tag input to attach to a release
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   NOTCHAT_KEYSTORE_BASE64     base64 of the release keystore (base64 -w0 notchat-release.keystore)
+#   NOTCHAT_KEYSTORE_PASSWORD   keystore (store) password
+#   NOTCHAT_KEY_ALIAS           key alias (e.g. notchat)
+#   NOTCHAT_KEY_PASSWORD        key password
+# See ANDROID.md § 8.
+
+name: Android release APK
+
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag/release to build & attach to (empty = build current ref, artifact only)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # gh release create/upload
+
+concurrency:
+  # Serialise runs for the same tag (release + tag-push fire together).
+  group: android-release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  DX_VERSION: "0.7.10"            # keep in sync with dioxus = "0.7.x" in Cargo.toml
+  NDK_VERSION: "27.0.12077973"
+  ANDROID_PLATFORM: "android-34"  # dx 0.7 template compileSdk/targetSdk
+  BUILD_TOOLS: "34.0.0"
+  ASSET_NAME: NotChat-arm64.apk
+  RUST_TARGET: aarch64-linux-android
+
+jobs:
+  check:
+    name: Resolve tag / skip duplicate
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      skip: ${{ steps.r.outputs.skip }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REL_TAG: ${{ github.event.release.tag_name }}
+          IN_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            release) TAG="$REL_TAG" ;;
+            push) TAG="$REF_NAME" ;;
+            *) TAG="$IN_TAG" ;;
+          esac
+          SKIP=false
+          if [ "$EVENT" = push ] && [ -n "$TAG" ] && \
+             gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qxF "$ASSET_NAME"; then
+            echo "Release $TAG already has $ASSET_NAME - skipping duplicate build."
+            SKIP=true
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build signed arm64 APK
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.tag || github.ref }}
+
+      - name: Check signing secrets present
+        env:
+          KS_B64: ${{ secrets.NOTCHAT_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.NOTCHAT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NOTCHAT_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.NOTCHAT_KEY_PASSWORD }}
+        run: |
+          missing=()
+          [ -n "$KS_B64" ] || missing+=(NOTCHAT_KEYSTORE_BASE64)
+          [ -n "$KS_PASS" ] || missing+=(NOTCHAT_KEYSTORE_PASSWORD)
+          [ -n "$KEY_ALIAS" ] || missing+=(NOTCHAT_KEY_ALIAS)
+          [ -n "$KEY_PASS" ] || missing+=(NOTCHAT_KEY_PASSWORD)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]} (see ANDROID.md § 8)"
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK / NDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: >-
+            platform-tools
+            platforms;${{ env.ANDROID_PLATFORM }}
+            build-tools;${{ env.BUILD_TOOLS }}
+            ndk;${{ env.NDK_VERSION }}
+
+      - name: Export NDK paths
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$NDK"
+          {
+            echo "NDK_HOME=$NDK"
+            echo "ANDROID_NDK_HOME=$NDK"
+            echo "ANDROID_NDK_ROOT=$NDK"
+            echo "ANDROID_SDK_ROOT=$ANDROID_HOME"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Rust (rust-toolchain.toml) + Android target
+        run: |
+          TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          echo "toolchain: $TOOLCHAIN"
+          rustup toolchain install "$TOOLCHAIN" --profile minimal \
+            --component rustfmt,clippy --target "$RUST_TARGET"
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-${{ env.RUST_TARGET }}-release
+          cache-on-failure: true
+
+      - name: Cache Gradle + dx prebuilts (OpenSSL)
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.local/share/.dx
+          key: gradle-dx-${{ env.DX_VERSION }}-${{ hashFiles('Dioxus.toml', 'Cargo.lock') }}
+          restore-keys: |
+            gradle-dx-${{ env.DX_VERSION }}-
+
+      - name: Install dioxus-cli (dx ${{ env.DX_VERSION }})
+        run: |
+          base="https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}"
+          f="dx-x86_64-unknown-linux-gnu.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$f"
+          curl -fsSL "$base/dx-x86_64-unknown-linux-gnu.sha256" | grep " $f\$" | sha256sum -c -
+          mkdir -p "$HOME/.cargo/bin"
+          tar xzf "$f" -C "$HOME/.cargo/bin" dx
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/dx" --version
+
+      - name: Set up Python (launcher icon generator)
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Pillow
+        run: python -m pip install --quiet pillow
+
+      - name: Decode release keystore
+        env:
+          KS_B64: ${{ secrets.NOTCHAT_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$KS_B64" | base64 -d > android/notchat-release.keystore
+          test -s android/notchat-release.keystore
+
+      - name: Build release APK (android/build-release-apk.sh)
+        env:
+          NOTCHAT_KEYSTORE: android/notchat-release.keystore
+          NOTCHAT_KEYSTORE_PASSWORD: ${{ secrets.NOTCHAT_KEYSTORE_PASSWORD }}
+          NOTCHAT_KEY_ALIAS: ${{ secrets.NOTCHAT_KEY_ALIAS }}
+          NOTCHAT_KEY_PASSWORD: ${{ secrets.NOTCHAT_KEY_PASSWORD }}
+        run: |
+          # versionName from tag (v1.2.3 -> 1.2.3); empty for untagged manual builds
+          if [ -n "$TAG" ]; then export NOTCHAT_VERSION_NAME="${TAG#v}"; fi
+          android/build-release-apk.sh
+          cp app-release-arm64.apk "$ASSET_NAME"
+          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+          cat "$ASSET_NAME.sha256"
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f android/notchat-release.keystore android/keystore.properties
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: NotChat-arm64-${{ needs.check.outputs.tag || github.sha }}
+          path: |
+            ${{ env.ASSET_NAME }}
+            ${{ env.ASSET_NAME }}.sha256
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        if: needs.check.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # tag push without a release yet -> create one (pre-release for v1.2.3-rc1 style tags)
+            pre=(); case "$TAG" in *-*) pre=(--prerelease) ;; esac
+            gh release create "$TAG" --verify-tag --title "NotChat $TAG" --generate-notes "${pre[@]}"
+          fi
+          gh release upload "$TAG" "$ASSET_NAME" "$ASSET_NAME.sha256" --clobber
